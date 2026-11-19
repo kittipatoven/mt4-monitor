@@ -1,0 +1,7 @@
+tools/
+*.zip
+__pycache__/
+*.pyc
+api_key.txt
+*.log
+.claude/

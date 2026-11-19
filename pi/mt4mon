@@ -1,0 +1,99 @@
+#!/bin/bash
+# mt4mon - everyday commands for MT4 Trading Monitor V1 (installed by install.sh)
+set -uo pipefail
+
+SERVICE=mt4-monitor
+REPO=kittipatoven/mt4-monitor
+APP=/opt/mt4-monitor
+ENV_FILE=/etc/mt4-monitor.env
+
+env_get() {  # read a setting (the file is root-only, so this may ask for sudo)
+  sudo grep -s "^$1=" "$ENV_FILE" | cut -d= -f2-
+}
+port() {
+  local p; p="$(sudo -n grep -s '^MT4MON_PORT=' "$ENV_FILE" 2>/dev/null | cut -d= -f2-)"
+  echo "${p:-80}"
+}
+ts_ip() { tailscale ip -4 2>/dev/null | head -1; }
+
+usage() {
+  cat <<'EOF'
+mt4mon - MT4 Trading Monitor V1
+
+  mt4mon status     service state + is MT4 data arriving?
+  mt4mon logs       live log (Ctrl+C to quit)
+  mt4mon restart    restart the monitor
+  mt4mon stop       stop the monitor
+  mt4mon start      start the monitor
+  mt4mon config     edit settings, then restart
+  mt4mon key        show the API key (for MonitorEA_key.txt)
+  mt4mon url        show the URLs to put in MT4
+  mt4mon vps        show the one-line VPS setup command (includes the key)
+  mt4mon uninstall  remove the monitor (keeps the API key)
+  mt4mon ip         show Tailscale and LAN IPs
+  mt4mon i2c        scan the I2C bus (LCD should be 27 or 3f)
+  mt4mon lcdtest    write a test line + all icons to the LCD
+  mt4mon test       send ONE fake snapshot (screen shows fake data until MT4 sends again)
+EOF
+}
+
+case "${1:-help}" in
+  status)
+    systemctl --no-pager status "$SERVICE" | sed -n '1,3p'
+    echo
+    h="$(curl -fsS "http://127.0.0.1:$(port)/health" 2>/dev/null)" || { echo "API not answering"; exit 1; }
+    python3 - "$h" <<'PY'
+import json, sys
+d = json.loads(sys.argv[1])
+age = d.get("mt4_age_seconds")
+if age is None:
+    print("MT4 data : none yet (waiting for MonitorEA)")
+elif d.get("mt4_stale"):
+    print(f"MT4 data : STALE - last update {age:.0f}s ago")
+else:
+    print(f"MT4 data : OK - last update {age:.1f}s ago ({d.get('updates')} since start)")
+PY
+    ;;
+  logs)     journalctl -u "$SERVICE" -f -n 30 -o short-iso ;;
+  restart)  sudo systemctl restart "$SERVICE" && echo "restarted" ;;
+  stop)     sudo systemctl stop "$SERVICE" && echo "stopped" ;;
+  start)    sudo systemctl start "$SERVICE" && echo "started" ;;
+  config)
+    sudo "${EDITOR:-nano}" "$ENV_FILE" && sudo systemctl restart "$SERVICE" && echo "saved + restarted"
+    ;;
+  key)      env_get MT4MON_API_KEY ;;
+  url)
+    ip="$(ts_ip)"; [ -n "$ip" ] || ip="<tailscale-ip>"
+    p="$(port)"; [ "$p" = "80" ] || ip="$ip:$p"
+    echo "MT4 Allow WebRequest : http://$ip"
+    echo "MonitorEA InpUrl     : http://$ip/api/update"
+    ;;
+  vps)
+    ip="$(ts_ip)"; [ -n "$ip" ] || { echo "Tailscale is not logged in yet (sudo tailscale up)"; exit 1; }
+    p="$(port)"; [ "$p" = "80" ] || ip="$ip:$p"
+    key="$(env_get MT4MON_API_KEY)"
+    echo "On the Windows VPS, open PowerShell as Administrator and paste:"
+    echo
+    echo "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create((irm https://raw.githubusercontent.com/$REPO/main/vps/setup_vps.ps1))) -PiIp $ip -ApiKey $key\""
+    ;;
+  uninstall) sudo bash "$APP/uninstall.sh" ${2:+"$2"} ;;   # add --purge to delete the key too
+  ip)
+    echo "Tailscale : $(ts_ip || true)"
+    echo "LAN       : $(hostname -I | awk '{print $1}')"
+    ;;
+  i2c)      sudo i2cdetect -y 1 ;;
+  lcdtest)
+    addr="$(env_get MT4MON_LCD_ADDRESS)"
+    sudo systemctl stop "$SERVICE"
+    sudo -u mt4mon "$APP/venv/bin/python" "$APP/lcd.py" --address "${addr:-0x27}"
+    echo "Look at the screen... restarting the monitor in 8 seconds"
+    sleep 8
+    sudo systemctl start "$SERVICE"
+    ;;
+  test)
+    key="$(env_get MT4MON_API_KEY)"
+    "$APP/venv/bin/python" "$APP/test_sender.py" --url "http://127.0.0.1:$(port)" --key "$key"
+    ;;
+  help|-h|--help) usage ;;
+  *) echo "unknown command: $1"; echo; usage; exit 1 ;;
+esac
