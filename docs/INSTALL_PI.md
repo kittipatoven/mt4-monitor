@@ -118,7 +118,7 @@ MT4 data : OK - last update 2.1s ago (154 since start)
 - ปุ่ม AutoTrading ปิด → `!! AUTOTRADING IS OFF`
 - ขาดทุนลอยตัว ≥ 2% ของ Balance → `!! DRAWDOWN -2.4%  -850.40`
 
-**ไฟกลางคืน:** ปิด backlight 23:00–07:00 (ยกเว้นมีแจ้งเตือน)
+**ไฟจอ:** เปิดตลอดเวลา (ค่าเริ่มต้น) ถ้าต้องการปิดกลางคืน ตั้ง `MT4MON_NIGHT_START=23` และ `MT4MON_NIGHT_END=7`
 
 ## 4. ปรับค่าตั้ง
 
@@ -128,7 +128,7 @@ MT4 data : OK - last update 2.1s ago (154 since start)
 |---|---|---|
 | `MT4MON_SINGLE_PAGE` | `1` | `1` = หน้าเดียว, `0` = วนหลายหน้า |
 | `MT4MON_DD_ALERT_PCT` | `2.0` | แจ้งเตือนเมื่อขาดทุนลอยตัวถึงกี่ % ของ Balance (`0` = ปิด) |
-| `MT4MON_NIGHT_START` / `MT4MON_NIGHT_END` | `23` / `7` | ปิดไฟจอช่วงกลางคืน (`-1` = ไม่ปิด) |
+| `MT4MON_NIGHT_START` / `MT4MON_NIGHT_END` | `-1` / `7` | ปิดไฟจอช่วงกลางคืน เช่น `23` / `7` (`-1` = เปิดตลอด) |
 | `MT4MON_STALE_SECONDS` | `30` | ไม่มีข้อมูลเกินกี่วินาทีถึงแจ้ง `MT4 NO DATA` |
 | `MT4MON_HOME_SECONDS` / `MT4MON_PAGE_SECONDS` | `8` / `3` | เวลาแต่ละหน้า (โหมดหลายหน้า) |
 | `MT4MON_LCD_ADDRESS` | หาให้อัตโนมัติ | address ของจอ |
@@ -158,7 +158,7 @@ mt4mon uninstall --purge   # ลบหมดรวม API key
 | อาการ | ตรวจ / แก้ |
 |---|---|
 | ไฟจอติดแต่ไม่มีตัวอักษร หรือเป็นกล่องทึบ | หมุนสกรู contrast สีฟ้าหลังจอช้า ๆ |
-| ไฟจอดับ | ช่วง 23:00–07:00 ไฟดับเป็นปกติ / ถ้าไม่ใช่ ดู `mt4mon status` |
+| ไฟจอดับ | ถ้าตั้งโหมดกลางคืนไว้ ไฟดับช่วงนั้นเป็นปกติ / ถ้าไม่ใช่ ดู `mt4mon status` |
 | `mt4mon i2c` ไม่เจอ `27`/`3f` | ตรวจสาย SDA↔Pin 3, SCL↔Pin 5, GND, VCC / รีบูตหลังเปิด I2C ครั้งแรก |
 | จอค้าง `Waiting for MT4` | MonitorEA ยังไม่ส่ง — ดูแท็บ Experts ใน MT4 และ `mt4mon url` |
 | แท็บ Experts: `err=5200` | URL ใช้พอร์ตอื่นที่ไม่ใช่ 80 — ใช้ URL จาก `mt4mon url` |

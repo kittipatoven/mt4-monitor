@@ -55,5 +55,5 @@ MAX_ORDER_PAGES = _env_int("MT4MON_MAX_ORDER_PAGES", 5)
 # Blink backlight + alert page when floating loss reaches this % of balance (0 = off).
 DD_ALERT_PCT = _env_float("MT4MON_DD_ALERT_PCT", 2.0)
 # Backlight off between these local hours (alerts still light it). -1 = never off.
-NIGHT_START = _env_int("MT4MON_NIGHT_START", 23)
+NIGHT_START = _env_int("MT4MON_NIGHT_START", -1)
 NIGHT_END = _env_int("MT4MON_NIGHT_END", 7)
