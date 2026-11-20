@@ -45,6 +45,8 @@ LCD_ROWS = 2
 # One fixed page (P/L, orders, equity, status); alert pages only when needed.
 SINGLE_PAGE = _env_bool("MT4MON_SINGLE_PAGE", True)
 HOME_SECONDS = _env_int("MT4MON_HOME_SECONDS", 8)   # home page (P/L + equity)
+BIG_SECONDS = _env_int("MT4MON_BIG_SECONDS", 6)     # single-page mode: big P/L digits
+SPARK_SECONDS = _env_int("MT4MON_SPARK_SECONDS", 4) # single-page mode: 1-hour equity sparkline
 PAGE_SECONDS = _env_int("MT4MON_PAGE_SECONDS", 3)   # every other page
 # No update from MT4 for this long -> show "DATA STALE" warning.
 STALE_SECONDS = _env_int("MT4MON_STALE_SECONDS", 30)

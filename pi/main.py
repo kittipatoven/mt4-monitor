@@ -6,6 +6,8 @@ pages on the 16x2 LCD.
 
 Nothing here can place, modify or close orders.
 """
+import bisect
+import collections
 import hmac
 import json
 import logging
@@ -15,7 +17,8 @@ import time
 from flask import Flask, jsonify, request
 
 import config
-from lcd import CHECK, CROSS, DOT, DOWN, FULL, HALF, HEART, UP, ConsoleLcd, I2CLcd
+from lcd import (BIG_A, BIG_B, BIG_C, CHECK, CROSS, DOT, DOWN, FULL, HALF, HEART, SPARK, TDN,
+                 TUP, UP, ConsoleLcd, I2CLcd)
 
 log = logging.getLogger("mt4mon")
 
@@ -26,18 +29,28 @@ ORDER_TYPES = {0: "BUY", 1: "SELL", 2: "BLMT", 3: "SLMT", 4: "BSTP", 5: "SSTP"}
 # ---------------------------------------------------------------------------
 _state_lock = threading.Lock()
 _state = {"data": None, "received_at": None, "updates": 0}
+# (time, equity, P/L) samples for the sparkline and trend arrow; ~2 h at one per 5 s.
+_history = collections.deque(maxlen=1500)
 
 
 def set_snapshot(data, now=None):
+    now = time.monotonic() if now is None else now
     with _state_lock:
         _state["data"] = data
-        _state["received_at"] = time.monotonic() if now is None else now
+        _state["received_at"] = now
         _state["updates"] += 1
+        acc = data["account"]
+        _history.append((now, acc["equity"], acc["profit"]))
 
 
 def get_snapshot():
     with _state_lock:
         return _state["data"], _state["received_at"], _state["updates"]
+
+
+def get_history():
+    with _state_lock:
+        return list(_history)
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +153,76 @@ def pct_text(p):
     return f"{p:.2f}%" if p < 10 else f"{p:.1f}%"
 
 
-def build_pages(data, received_at, now, tick=0):
+# --- Big digits: 3 columns x 2 rows each (F = full block, A/B/C = stripes) ---
+_F, _S = FULL, " "
+BIG_DIGITS = {
+    "0": (_F + BIG_A + _F, _F + BIG_B + _F),
+    "1": (BIG_A + _F + _S, BIG_B + _F + BIG_B),
+    "2": (BIG_C + BIG_C + _F, _F + BIG_B + BIG_B),
+    "3": (BIG_C + BIG_C + _F, BIG_B + BIG_B + _F),
+    "4": (_F + BIG_B + _F, _S + _S + _F),
+    "5": (_F + BIG_C + BIG_C, BIG_B + BIG_B + _F),
+    "6": (_F + BIG_C + BIG_C, _F + BIG_B + _F),
+    "7": (BIG_A + BIG_A + _F, _S + _S + _F),
+    "8": (_F + BIG_C + _F, _F + BIG_B + _F),
+    "9": (_F + BIG_C + _F, BIG_B + BIG_B + _F),
+}
+
+
+def big_pl(pl, beat):
+    """P/L as big 2-row digits: arrow + heart on the left, decimals on the right."""
+    a = abs(pl)
+    whole, dec = f"{a:.2f}".split(".")
+    tail1, tail2 = "P/L", "." + dec
+    if len(whole) > 4:                       # 10,000+ -> thousands with a small 'k'
+        whole, tail2 = str(int(round(a / 1000)))[-4:], "  k"
+    top = " ".join(BIG_DIGITS[d][0] for d in whole)
+    bottom = " ".join(BIG_DIGITS[d][1] for d in whole)
+    if len(whole) == 4:                      # 15 columns: no room for decimals
+        return arrow(pl) + top, beat + bottom
+    pad = " " * (16 - 1 - len(top) - 3)
+    return arrow(pl) + pad + top + tail1, beat + pad + bottom + tail2
+
+
+def _value_at(times, values, t):
+    """Last value recorded at or before time t (None if none yet)."""
+    i = bisect.bisect_right(times, t)
+    return values[i - 1] if i else None
+
+
+def trend_char(hist, now, pl, window=30):
+    """Thin arrow: is P/L higher or lower than `window` seconds ago?"""
+    times = [h[0] for h in hist]
+    old = _value_at(times, [h[2] for h in hist], now - window)
+    if old is None or abs(pl - old) < 0.005:
+        return " "
+    return TUP if pl > old else TDN
+
+
+def sparkline(hist, now, cells=16, span=3600):
+    """Equity over the last `span` seconds as `cells` bars. Returns (bars, change)."""
+    times, eqs = [h[0] for h in hist], [h[1] for h in hist]
+    step = span / cells
+    pts = [_value_at(times, eqs, now - span + step * (i + 1)) for i in range(cells)]
+    vals = [v for v in pts if v is not None]
+    if not vals:
+        return " " * cells, None
+    if len(vals) < 2:                        # just started: nothing to compare yet
+        return "".join(" " if v is None else SPARK[3] for v in pts), None
+    lo, hi = min(vals), max(vals)
+    out = []
+    for v in pts:
+        if v is None:
+            out.append(" ")
+        elif hi - lo < 0.01:
+            out.append(SPARK[3])             # flat: a level line in the middle
+        else:
+            lvl = 1 + round((v - lo) / (hi - lo) * 7)
+            out.append(FULL if lvl >= 8 else SPARK[lvl - 1])
+    return "".join(out), pts[-1] - vals[0]
+
+
+def build_pages(data, received_at, now, tick=0, hist=()):
     """Return (pages, alert). Each page is (line1, line2, seconds)."""
     H, P = config.HOME_SECONDS, config.PAGE_SECONDS
     if data is None:
@@ -180,9 +262,16 @@ def build_pages(data, received_at, now, tick=0):
         ok = mark(broker is not False and auto is not False)
         right = f"ORD {n_market}{beat}"
         room = 16 - len(right) - 1          # keep one space between the two
-        page = (row(arrow(pl) + signed(pl, room - 1), right),
-                "EQ " + money(eq, 11).rjust(11) + " " + ok, P)
-        return alerts + [page], bool(alerts)
+        trend = trend_char(hist, now, pl)
+        detail = (row(arrow(pl) + signed(pl, room - 2) + trend, right),
+                  "EQ " + money(eq, 11).rjust(11) + " " + ok, P)
+        big = (*big_pl(pl, beat), config.BIG_SECONDS)
+        bars, change = sparkline(hist, now)
+        if change is None:
+            spark = ("EQ 1H", bars, config.SPARK_SECONDS)
+        else:
+            spark = (row("EQ 1H ", arrow(change) + signed(change, 9)), bars, config.SPARK_SECONDS)
+        return alerts + [big, detail, spark], bool(alerts)
 
     # Home: P/L with direction arrow, blinking heart = data is live, equity.
     left = f"{arrow(pl)} {signed(pl, 9)}"
@@ -278,6 +367,16 @@ def wifi_pages(ws):
     return None
 
 
+def boot_animation(lcd, stop_event):
+    """Title + a loading bar that fills left to right (~1.5 s)."""
+    title = "MT4 MONITOR V1".center(16)
+    for i in range(17):
+        lcd.show(title, FULL * i)
+        stop_event.wait(0.08)
+    lcd.show(title, "Ready".center(16))
+    stop_event.wait(0.6)
+
+
 def lcd_loop(stop_event):
     """Ticks once a second: heart blink, live age, per-page dwell, backlight."""
     lcd = None
@@ -286,8 +385,7 @@ def lcd_loop(stop_event):
         try:
             if lcd is None:
                 lcd = make_lcd()
-                lcd.show("MT4 MONITOR V1", "Starting...")
-                stop_event.wait(1.5)
+                boot_animation(lcd, stop_event)
                 page_started = time.monotonic()
             now = time.monotonic()
             data, received_at, _ = get_snapshot()
@@ -296,7 +394,7 @@ def lcd_loop(stop_event):
             if setup_screen:
                 alert = False             # setup instructions: steady light, no blinking
             else:
-                pages, alert = build_pages(data, received_at, now, tick)
+                pages, alert = build_pages(data, received_at, now, tick, get_history())
             if index >= len(pages):
                 index, page_started = 0, now
             elif now - page_started >= pages[index][2]:

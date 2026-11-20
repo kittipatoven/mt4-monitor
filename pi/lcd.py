@@ -3,9 +3,11 @@
 Backpack pin mapping (the common one):
     P0=RS  P1=RW  P2=EN  P3=Backlight  P4..P7=D4..D7
 
-Custom icons live in the LCD's 8 CGRAM slots. In page text they are the
-characters UP, DOWN, HEART, ... below (chr(0)..chr(6)); FULL is the ROM
-full-block character (0xFF).
+Custom glyphs: the LCD holds only 8 custom shapes (CGRAM) at a time, but the
+pages use ~20 (icons, big-digit parts, sparkline levels). Page text uses the
+glyph characters defined below (Unicode private-use codes); show() loads the
+ones a frame needs into the 8 slots on the fly, reusing slots that already
+hold the right shape. FULL is the ROM full-block character (0xFF).
 
 Run directly to test the screen:
     python3 lcd.py --address 0x27
@@ -18,12 +20,22 @@ import time
 RS = 0x01
 EN = 0x04
 BACKLIGHT = 0x08
-
 LINE_ADDR = (0x80, 0xC0)
+SLOTS = 8
+
+FULL = "\xff"   # ROM full block
+
+
+def _g(i):
+    return chr(0xE000 + i)
+
 
 # --- Icons ---------------------------------------------------------------
-UP, DOWN, HEART, CHECK, CROSS, HALF, DOT = (chr(i) for i in range(7))
-FULL = "\xff"
+UP, DOWN, HEART, CHECK, CROSS, HALF, DOT, TUP, TDN = (_g(i) for i in range(9))
+# --- Big digit parts (3 rows thick top / bottom stripes) -----------------
+BIG_A, BIG_B, BIG_C = _g(10), _g(11), _g(12)
+# --- Sparkline levels 1..7 (level 8 = FULL) ------------------------------
+SPARK = [_g(20 + i) for i in range(7)]
 
 GLYPHS = {
     UP:    [0x00, 0x04, 0x0E, 0x1F, 0x1F, 0x00, 0x00, 0x00],
@@ -31,22 +43,61 @@ GLYPHS = {
     HEART: [0x00, 0x0A, 0x1F, 0x1F, 0x0E, 0x04, 0x00, 0x00],
     CHECK: [0x00, 0x01, 0x03, 0x16, 0x1C, 0x08, 0x00, 0x00],
     CROSS: [0x00, 0x1B, 0x0E, 0x04, 0x0E, 0x1B, 0x00, 0x00],
-    HALF:  [0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x00],  # half bar cell
-    DOT:   [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15, 0x00],  # empty bar cell
+    HALF:  [0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x1C, 0x00],   # half bar cell
+    DOT:   [0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x15, 0x00],   # empty bar cell
+    TUP:   [0x04, 0x0E, 0x15, 0x04, 0x04, 0x04, 0x00, 0x00],   # thin arrow: rising
+    TDN:   [0x00, 0x00, 0x04, 0x04, 0x04, 0x15, 0x0E, 0x04],   # thin arrow: falling
+    BIG_A: [0x1F, 0x1F, 0x1F, 0x00, 0x00, 0x00, 0x00, 0x00],   # top stripe
+    BIG_B: [0x00, 0x00, 0x00, 0x00, 0x00, 0x1F, 0x1F, 0x1F],   # bottom stripe
+    BIG_C: [0x1F, 0x1F, 0x1F, 0x00, 0x00, 0x1F, 0x1F, 0x1F],   # both stripes
 }
+for _i, _ch in enumerate(SPARK):                            # bottom (i+1) rows filled
+    GLYPHS[_ch] = [0x00] * (7 - _i) + [0x1F] * (_i + 1)
 
-# How icons look in the console preview.
-PREVIEW = {UP: "▲", DOWN: "▼", HEART: "♥", CHECK: "✓", CROSS: "✗",
-           HALF: "▌", DOT: "·", FULL: "█"}
+# How glyphs look in the console preview.
+PREVIEW = {UP: "▲", DOWN: "▼", HEART: "♥", CHECK: "✓", CROSS: "✗", HALF: "▌", DOT: "·",
+           TUP: "↑", TDN: "↓", BIG_A: "▀", BIG_B: "▄", BIG_C: "≡", FULL: "█"}
+PREVIEW.update(zip(SPARK, "▁▂▃▄▅▆▇"))
 
 
 def _clean(text, width):
-    """Keep ASCII + our icon codes, pad/cut to width."""
+    """Keep ASCII + our glyphs, pad/cut to width."""
     out = []
     for ch in str(text):
         o = ord(ch)
         out.append(ch if (32 <= o <= 126 or ch in GLYPHS or ch == FULL) else "?")
     return "".join(out)[:width].ljust(width)
+
+
+def allocate(slots, needed):
+    """Give each needed glyph a CGRAM slot, keeping glyphs already loaded.
+
+    slots:  current list of 8 glyph chars (or None)
+    needed: glyphs used by the next frame, in order of first use
+    Returns (new_slots, changed_slot_numbers, glyphs_left_out).
+    """
+    new = list(slots)
+    keep = set(needed)
+    changed, missing = [], []
+    for g in needed:
+        if g in new:
+            continue
+        free = next((i for i, s in enumerate(new) if s is None or s not in keep), None)
+        if free is None:
+            missing.append(g)
+            continue
+        new[free] = g
+        changed.append(free)
+    return new, changed, missing
+
+
+def glyphs_in(*lines):
+    seen = []
+    for line in lines:
+        for ch in line:
+            if ch in GLYPHS and ch not in seen:
+                seen.append(ch)
+    return seen
 
 
 class I2CLcd:
@@ -60,6 +111,7 @@ class I2CLcd:
         self._lock = threading.Lock()
         self._bl = BACKLIGHT
         self._shown = [None] * rows
+        self._slots = [None] * SLOTS
         self.init()
 
     # -- low level ------------------------------------------------------
@@ -80,6 +132,11 @@ class I2CLcd:
         self._write4((value & 0xF0) | mode)
         self._write4(((value << 4) & 0xF0) | mode)
 
+    def _load_slot(self, slot, glyph):
+        self._send(0x40 | (slot << 3))
+        for r in GLYPHS[glyph]:
+            self._send(r, RS)
+
     # -- public ---------------------------------------------------------
     def init(self):
         with self._lock:
@@ -93,24 +150,27 @@ class I2CLcd:
             self._send(0x06)    # entry mode: increment
             self._send(0x01)    # clear
             time.sleep(0.002)
-            for ch, rows in GLYPHS.items():   # load icons into CGRAM
-                self._send(0x40 | (ord(ch) << 3))
-                for r in rows:
-                    self._send(r, RS)
-            self._send(0x80)
             self._shown = [None] * self.rows
+            self._slots = [None] * SLOTS
 
     def show(self, line1, line2=""):
-        """Write two lines. Only rewrites lines that changed (no flicker)."""
-        lines = [_clean(line1, self.cols), _clean(line2, self.cols)]
+        """Write two lines. Loads the glyphs they need; rewrites only changed lines."""
+        lines = [_clean(line1, self.cols), _clean(line2, self.cols)][: self.rows]
         with self._lock:
-            for row, text in enumerate(lines[: self.rows]):
-                if self._shown[row] == text:
+            needed = glyphs_in(*lines)
+            self._slots, changed, missing = allocate(self._slots, needed)
+            for slot in changed:          # the screen redraws from CGRAM by itself
+                self._load_slot(slot, self._slots[slot])
+            index = {g: i for i, g in enumerate(self._slots) if g is not None}
+            for row, text in enumerate(lines):
+                data = bytes(index[c] if c in index else (ord("?") if c in missing else ord(c))
+                             for c in text)
+                if self._shown[row] == data:
                     continue
                 self._send(LINE_ADDR[row])
-                for ch in text:
-                    self._send(ord(ch), RS)
-                self._shown[row] = text
+                for b in data:
+                    self._send(b, RS)
+                self._shown[row] = data
 
     def set_backlight(self, on):
         bl = BACKLIGHT if on else 0
@@ -152,12 +212,15 @@ class ConsoleLcd:
         pass
 
 
+def preview_line(s, width=16):
+    return "".join(PREVIEW.get(c, c) for c in _clean(s, width))
+
+
 def render_preview(line1, line2, backlight=True):
-    """Text picture of the LCD, icons shown as Unicode."""
-    def p(s):
-        return "".join(PREVIEW.get(c, c) for c in _clean(s, 16))
+    """Text picture of the LCD, glyphs shown as Unicode."""
     edge = "+" + "-" * 16 + "+" + ("" if backlight else "  (backlight off)")
-    return "\n".join([edge, "|" + p(line1) + "|", "|" + p(line2) + "|", "+" + "-" * 16 + "+"])
+    return "\n".join([edge, "|" + preview_line(line1) + "|", "|" + preview_line(line2) + "|",
+                      "+" + "-" * 16 + "+"])
 
 
 def main():
@@ -173,8 +236,10 @@ def main():
         print("Check wiring, 'sudo raspi-config' I2C enable, and 'sudo i2cdetect -y 1'.")
         sys.exit(1)
 
-    lcd.show("MT4 MONITOR V1", f"{UP}{DOWN}{HEART}{CHECK}{CROSS} {FULL}{FULL}{HALF}{DOT}{DOT}")
-    print("Wrote 'MT4 MONITOR V1' and the icon row.")
+    lcd.show("MT4 MONITOR V1", f"{UP}{DOWN}{HEART}{CHECK}{CROSS}{TUP}{TDN} {FULL}{HALF}{DOT}")
+    time.sleep(3)
+    lcd.show("SPARK " + "".join(SPARK) + FULL, f"{BIG_A}{BIG_B}{BIG_C} big digits")
+    print("Wrote 2 test frames (icons, then sparkline + big-digit parts).")
     print("Blank screen or only boxes? Turn the blue contrast pot on the backpack.")
     lcd.close()
 
