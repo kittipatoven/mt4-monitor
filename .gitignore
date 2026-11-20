@@ -5,3 +5,4 @@ __pycache__/
 api_key.txt
 *.log
 .claude/
+New Text Document*.txt
