@@ -26,6 +26,7 @@ MT4 (Windows VPS) --MonitorEA--> HTTP over Tailscale --> Raspberry Pi --I2C--> L
 | `pi/mt4mon` | คำสั่งใช้งานประจำวัน (`mt4mon status`, `logs`, `config`, `vps` ...) |
 | `pi/uninstall.sh` | ถอนการติดตั้ง |
 | `pi/main.py`, `pi/lcd.py`, `pi/config.py` | API + หน้าจอ LCD |
+| `pi/wifi_setup.py` | ไม่มีเน็ต → Pi ปล่อย Wi-Fi `MT4-Setup-XXXX` + หน้าเว็บเลือก Wi-Fi ผ่านมือถือ |
 | `vps/setup_vps.ps1` | ตั้งค่า VPS: Tailscale, MonitorEA, ไฟล์ key, compile |
 | `mt4/MonitorEA.mq4` | EA อ่านข้อมูลบัญชี/ออเดอร์แล้วส่งไป Pi (ไม่เทรด) |
 | `docs/WIRING.md` | การต่อวงจร + คำเตือน 5V |

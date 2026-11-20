@@ -1,0 +1,49 @@
+ขั้นตอนการติดตั้งแบบเร็วมีทั้งหมด **6 ขั้น** ใช้เวลาประมาณ 10–15 นาทีครับ
+
+## ขั้นที่ 1 — ต่อจอ LCD กับ Pi (ปิดเครื่องก่อน)
+| จอ LCD | Raspberry Pi |
+|---|---|
+| GND | Pin 6 |
+| VCC | Pin 2 หรือ 4 (5V) |
+| SDA | Pin 3 |
+| SCL | Pin 5 |
+
+⚠️ ก่อนต่อ SDA/SCL ให้วัดไฟที่ขา SDA ของจอก่อน ถ้าได้ประมาณ 5V ต้องใช้ Level Shifter (ดูรายละเอียดใน [WIRING.md](docs/WIRING.md))
+
+## ขั้นที่ 2 — เตรียม Raspberry Pi
+ใช้ **Raspberry Pi Imager** เขียน Raspberry Pi OS ลงการ์ด โดยกด Edit Settings ตั้งค่าไว้ก่อน:
+- ชื่อผู้ใช้และรหัสผ่าน
+- ชื่อ Wi-Fi และรหัส Wi-Fi
+- เปิด **SSH**
+
+เสียบการ์ดแล้วเปิดเครื่อง รอประมาณ 2 นาที
+
+## ขั้นที่ 3 — สร้าง Tailscale auth key (ครั้งเดียว)
+https://login.tailscale.com/admin/settings/keys → **Generate auth key** → เปิด **Reusable** และ **Pre-approved** → คัดลอก key (`tskey-auth-...`)
+
+## ขั้นที่ 4 — Pi: คำสั่งเดียว
+เข้า Pi (SSH หรือคีย์บอร์ด) แล้ววางบรรทัดนี้ เปลี่ยน `tskey-auth-XXXX` เป็น key ของคุณ:
+```bash
+curl -fsSL https://raw.githubusercontent.com/kittipatoven/mt4-monitor/main/pi/install.sh | sudo bash -s -- --ts-key tskey-auth-XXXX
+```
+รอจนเห็น `INSTALL DONE` แล้ว **คัดลอกบรรทัดสำหรับ VPS** ที่พิมพ์ออกมาตอนจบ
+
+## ขั้นที่ 5 — VPS: คำสั่งเดียว
+บน Windows VPS เปิด **PowerShell แบบ Run as administrator** แล้ววางบรรทัดที่คัดลอกมาจาก Pi
+(ถ้าทำหาย พิมพ์ `sudo mt4mon vps` บน Pi เพื่อดูใหม่) รอจนเห็น `VPS SETUP DONE`
+
+## ขั้นที่ 6 — MT4: คลิก 3 ครั้ง
+1. **Tools → Options → Expert Advisors** → ติ๊ก Allow WebRequest → วาง URL (สคริปต์คัดลอกไว้ให้แล้ว) → OK
+2. **File → New Chart** → สัญลักษณ์ใดก็ได้ (**ห้ามใช้กราฟที่ CapyTrend ทำงานอยู่**)
+3. **Navigator → Expert Advisors → Refresh** → ดับเบิลคลิก **MonitorEA** → แท็บ Common **เอาติ๊ก Allow live trading ออก** → OK
+
+---
+
+**เสร็จแล้วเมื่อ:** ภายใน 5 วินาทีจอเปลี่ยนจาก `Waiting for MT4` เป็นข้อมูลจริง เช่น:
+```
+▲+438.15  ORD 1♥
+EQ   36,622.83 ✓
+```
+ตรวจสอบได้ด้วย `mt4mon status` บน Pi ซึ่งควรขึ้น `MT4 data : OK`
+
+รายละเอียดเต็มพร้อมแผนภาพและวิธีแก้ปัญหาอยู่ใน [คู่มือติดตั้ง MT4 Trading Monitor V1](https://claude.ai/artifact/M86qyTrjeH2QoaAsqqv4uG) ครับ

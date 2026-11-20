@@ -7,6 +7,7 @@ pages on the 16x2 LCD.
 Nothing here can place, modify or close orders.
 """
 import hmac
+import json
 import logging
 import threading
 import time
@@ -248,6 +249,35 @@ def make_lcd():
     return I2CLcd(bus=config.I2C_BUS, address=config.LCD_ADDRESS)
 
 
+WIFI_STATE_FILE = "/run/mt4-wifi/state.json"   # written by wifi_setup.py
+
+
+def read_wifi_state():
+    try:
+        with open(WIFI_STATE_FILE) as f:
+            return json.load(f)
+    except (OSError, ValueError):
+        return {}
+
+
+def wifi_pages(ws):
+    """LCD pages while the Pi is in Wi-Fi setup mode (None = show MT4 data)."""
+    mode = ws.get("mode")
+    P = config.PAGE_SECONDS
+    if mode == "setup":
+        pages = [
+            ("WIFI SETUP MODE", "Join on phone:", P),
+            (str(ws.get("ap_ssid", ""))[:16], "PASS " + str(ws.get("ap_pass", ""))[:11], P),
+            ("THEN OPEN", str(ws.get("url", "http://10.42.0.1"))[7:23] or "10.42.0.1", P),
+        ]
+        if ws.get("error"):
+            pages.insert(0, ("WIFI FAILED", "Try again", P))
+        return pages
+    if mode == "connecting":
+        return [("WIFI CONNECTING", str(ws.get("target", ""))[:16], P)]
+    return None
+
+
 def lcd_loop(stop_event):
     """Ticks once a second: heart blink, live age, per-page dwell, backlight."""
     lcd = None
@@ -261,14 +291,19 @@ def lcd_loop(stop_event):
                 page_started = time.monotonic()
             now = time.monotonic()
             data, received_at, _ = get_snapshot()
-            pages, alert = build_pages(data, received_at, now, tick)
+            pages = wifi_pages(read_wifi_state())
+            setup_screen = bool(pages)
+            if setup_screen:
+                alert = False             # setup instructions: steady light, no blinking
+            else:
+                pages, alert = build_pages(data, received_at, now, tick)
             if index >= len(pages):
                 index, page_started = 0, now
             elif now - page_started >= pages[index][2]:
                 index, page_started = (index + 1) % len(pages), now
             line1, line2, _ = pages[index]
             lcd.show(line1, line2)
-            lcd.set_backlight(backlight_on(alert, tick, time.localtime().tm_hour))
+            lcd.set_backlight(setup_screen or backlight_on(alert, tick, time.localtime().tm_hour))
             tick += 1
         except OSError as exc:  # I2C glitch / loose wire: retry, don't die
             log.warning("LCD error: %s (retrying)", exc)

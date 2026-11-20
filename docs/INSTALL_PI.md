@@ -67,6 +67,7 @@ powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create
 | `mt4mon config` | แก้ค่าตั้ง (เปิด nano) แล้วรีสตาร์ตให้เอง |
 | `mt4mon key` | แสดง API key |
 | `mt4mon url` | แสดง URL ที่ต้องใส่ใน MT4 |
+| `mt4mon wifi` | เปิดโหมดตั้งค่า Wi-Fi ทันที (เปลี่ยน Wi-Fi ผ่านมือถือ) |
 | `mt4mon vps` | แสดงคำสั่ง 1 บรรทัดสำหรับตั้งค่า VPS (มี key อยู่ในนั้น) |
 | `mt4mon ip` | แสดง IP Tailscale และ IP ในบ้าน |
 | `mt4mon i2c` | สแกน I2C (ควรเห็น `27` หรือ `3f`) |
@@ -120,6 +121,20 @@ MT4 data : OK - last update 2.1s ago (154 since start)
 
 **ไฟจอ:** เปิดตลอดเวลา (ค่าเริ่มต้น) ถ้าต้องการปิดกลางคืน ตั้ง `MT4MON_NIGHT_START=23` และ `MT4MON_NIGHT_END=7`
 
+## เปลี่ยน Wi-Fi ด้วยมือถือ (โหมดตั้งค่า Wi-Fi)
+
+ถ้า Pi **ไม่มีเน็ตนาน 90 วินาที** (ย้ายบ้าน, เปลี่ยนรหัส Wi-Fi, ฮอตสปอตปิด) จะเข้าโหมดตั้งค่าเอง:
+
+1. จอขึ้น `WIFI SETUP MODE` แล้วแสดงชื่อ Wi-Fi ของ Pi (`MT4-Setup-XXXX`) และรหัส (`PASS ...`)
+2. มือถือเชื่อม Wi-Fi นั้นด้วยรหัสบนจอ → หน้าตั้งค่าเด้งขึ้นเอง (หรือเปิด `10.42.0.1`)
+3. เลือก Wi-Fi (หรือพิมพ์ชื่อเอง) ใส่รหัส → **เชื่อมต่อ**
+4. จอขึ้น `WIFI CONNECTING` แล้วกลับมาแสดงข้อมูล MT4 ภายในไม่กี่วินาที
+   ถ้าขึ้น `WIFI FAILED` แปลว่ารหัสผิดหรือ Wi-Fi นั้นยังไม่เปิด — Wi-Fi ที่เลือกถูกบันทึกไว้และ Pi จะลองเองทุก ~3 นาที
+
+เปิดโหมดตั้งค่าเองเมื่อไหร่ก็ได้ (Pi จะหลุดจาก Wi-Fi ปัจจุบัน): `sudo mt4mon wifi`
+รหัสฮอตสปอตสุ่มให้ตอนติดตั้ง ดูได้ที่จอตอนเข้าโหมดตั้งค่า หรือ `MT4MON_SETUP_PASS` ใน `mt4mon config`
+ปิดความสามารถนี้: ตั้ง `MT4MON_WIFI_SETUP=0` (หรือติดตั้งด้วย `--no-wifi-setup`)
+
 ## 4. ปรับค่าตั้ง
 
 รัน `mt4mon config` แก้ค่าแล้วบันทึก (Ctrl+O, Enter, Ctrl+X) — service รีสตาร์ตให้เอง
@@ -132,6 +147,7 @@ MT4 data : OK - last update 2.1s ago (154 since start)
 | `MT4MON_STALE_SECONDS` | `30` | ไม่มีข้อมูลเกินกี่วินาทีถึงแจ้ง `MT4 NO DATA` |
 | `MT4MON_HOME_SECONDS` / `MT4MON_PAGE_SECONDS` | `8` / `3` | เวลาแต่ละหน้า (โหมดหลายหน้า) |
 | `MT4MON_LCD_ADDRESS` | หาให้อัตโนมัติ | address ของจอ |
+| `MT4MON_WIFI_SETUP` / `MT4MON_SETUP_AFTER` | `1` / `90` | เปิดโหมดตั้งค่า Wi-Fi เมื่อไม่มีเน็ตกี่วินาที (`0` = ปิด) |
 | `MT4MON_PORT` | `80` | พอร์ต API — **อย่าเปลี่ยน** (MT4 ใช้ได้แค่ 80/443) |
 | `MT4MON_API_KEY` | สุ่มตอนติดตั้ง | ถ้าเปลี่ยน ต้องแก้ `MonitorEA_key.txt` บน VPS ด้วย |
 

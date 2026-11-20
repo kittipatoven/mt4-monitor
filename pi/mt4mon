@@ -29,6 +29,7 @@ mt4mon - MT4 Trading Monitor V1
   mt4mon key        show the API key (for MonitorEA_key.txt)
   mt4mon url        show the URLs to put in MT4
   mt4mon vps        show the one-line VPS setup command (includes the key)
+  mt4mon wifi       open Wi-Fi setup mode now (drops the current Wi-Fi; hotspot info on the LCD)
   mt4mon uninstall  remove the monitor (keeps the API key)
   mt4mon ip         show Tailscale and LAN IPs
   mt4mon i2c        scan the I2C bus (LCD should be 27 or 3f)
@@ -77,6 +78,13 @@ PY
     echo "powershell -NoProfile -ExecutionPolicy Bypass -Command \"& ([scriptblock]::Create((irm https://raw.githubusercontent.com/$REPO/main/vps/setup_vps.ps1))) -PiIp $ip -ApiKey $key\""
     ;;
   uninstall) sudo bash "$APP/uninstall.sh" ${2:+"$2"} ;;   # add --purge to delete the key too
+  wifi)
+    echo "This disconnects the Pi from its current Wi-Fi (SSH and Tailscale drop too)."
+    echo "Then join the hotspot shown on the LCD with your phone and pick the new Wi-Fi."
+    read -r -p "Continue? [y/N] " ans
+    [ "$ans" = "y" ] || [ "$ans" = "Y" ] || { echo "cancelled"; exit 0; }
+    sudo touch /run/mt4-wifi/force && echo "setup mode starting - watch the LCD"
+    ;;
   ip)
     echo "Tailscale : $(ts_ip || true)"
     echo "LAN       : $(hostname -I | awk '{print $1}')"

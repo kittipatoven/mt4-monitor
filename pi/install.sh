@@ -31,6 +31,7 @@ SRC=""
 OWNER="${SUDO_USER:-pi}"
 OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
 WANT_TS=1
+WANT_WIFI=1
 TS_KEY="${TS_AUTHKEY:-}"
 LCD_ADDR=""
 REBOOT_NEEDED=0
@@ -44,6 +45,7 @@ trap 'die "stopped at line $LINENO - fix the problem above and run the installer
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-tailscale) WANT_TS=0 ;;
+    --no-wifi-setup) WANT_WIFI=0 ;;
     --ts-key)       TS_KEY="${2:-}"; shift ;;
     --lcd-address)  LCD_ADDR="${2:-}"; shift ;;
     -h|--help)      echo "Usage: sudo bash install.sh [--ts-key KEY] [--no-tailscale] [--lcd-address 0x27]"; exit 0 ;;
@@ -57,7 +59,7 @@ if [ -n "$TS_KEY" ] && ! [[ "$TS_KEY" =~ ^tskey- ]]; then
   die "--ts-key must start with tskey-"
 fi
 
-NEEDED="main.py lcd.py config.py test_sender.py requirements.txt mt4-monitor.service mt4-monitor.env.example mt4mon uninstall.sh"
+NEEDED="main.py lcd.py config.py test_sender.py requirements.txt mt4-monitor.service mt4-monitor.env.example mt4mon uninstall.sh wifi_setup.py mt4-wifi.service mt4-captive.conf"
 have_all() { for f in $NEEDED; do [ -f "$1/$f" ] || return 1; done; }
 if [ -z "$SRC" ] || ! have_all "$SRC"; then
   # Run through a pipe (curl | bash) or from an incomplete folder: fetch the project.
@@ -77,8 +79,8 @@ echo "MT4 Trading Monitor V1 installer  (source: $SRC)"
 # ---------------------------------------------------------------------
 step "1/7 Packages"
 apt-get update -qq
-DEBIAN_FRONTEND=noninteractive apt-get install -y -qq i2c-tools python3-venv curl >/dev/null
-ok "i2c-tools, python3-venv, curl"
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq i2c-tools python3-venv curl iptables dnsmasq-base >/dev/null
+ok "i2c-tools, python3-venv, curl, iptables, dnsmasq-base"
 # Python libraries from apt: much faster than pip on a Pi 3 (pip fills any gap later).
 if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-flask python3-waitress python3-smbus2 >/dev/null 2>&1; then
   ok "python3-flask, python3-waitress, python3-smbus2"
@@ -118,7 +120,7 @@ step "3/7 App files ($APP)"
 id "$SVC_USER" >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin "$SVC_USER"
 usermod -aG i2c "$SVC_USER"
 mkdir -p "$APP"
-for f in config.py lcd.py main.py test_sender.py requirements.txt uninstall.sh; do
+for f in config.py lcd.py main.py test_sender.py requirements.txt uninstall.sh wifi_setup.py; do
   tr -d '\r' < "$SRC/$f" > "$APP/$f"
   chmod 644 "$APP/$f"
 done
@@ -150,6 +152,14 @@ fi
 chown root:root "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
+SETUP_PASS="$(grep '^MT4MON_SETUP_PASS=' "$ENV_FILE" | cut -d= -f2-)"
+if [ "${#SETUP_PASS}" -lt 8 ]; then        # hotspot password for Wi-Fi setup mode
+  SETUP_PASS="$(python3 -c 'import secrets; print("".join(secrets.choice("23456789") for _ in range(8)))')"
+  sed -i "s/^MT4MON_SETUP_PASS=.*/MT4MON_SETUP_PASS=$SETUP_PASS/" "$ENV_FILE"
+fi
+[ "$WANT_WIFI" -eq 0 ] && sed -i 's/^MT4MON_WIFI_SETUP=.*/MT4MON_WIFI_SETUP=0/' "$ENV_FILE"
+WIFI_ON="$(grep '^MT4MON_WIFI_SETUP=' "$ENV_FILE" | cut -d= -f2-)"
+
 KEY="$(grep '^MT4MON_API_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 [ -n "$KEY" ] && [ "$KEY" != "CHANGE_ME" ] || die "MT4MON_API_KEY in $ENV_FILE is empty"
 PORT="$(grep '^MT4MON_PORT=' "$ENV_FILE" | cut -d= -f2-)"; PORT="${PORT:-80}"
@@ -163,13 +173,19 @@ chmod 600 "$KEY_COPY"
 ok "API key copy for MonitorEA: $KEY_COPY"
 
 # ---------------------------------------------------------------------
-step "5/7 Service + mt4mon command"
+step "5/7 Services + mt4mon command"
 tr -d '\r' < "$SRC/mt4-monitor.service" > /etc/systemd/system/$SERVICE.service
+tr -d '\r' < "$SRC/mt4-wifi.service" > /etc/systemd/system/mt4-wifi.service
+mkdir -p /etc/NetworkManager/dnsmasq-shared.d
+tr -d '\r' < "$SRC/mt4-captive.conf" > /etc/NetworkManager/dnsmasq-shared.d/mt4-captive.conf
 tr -d '\r' < "$SRC/mt4mon" > /usr/local/bin/mt4mon
 chmod 755 /usr/local/bin/mt4mon
 systemctl daemon-reload
-systemctl enable -q "$SERVICE"
+systemctl enable -q "$SERVICE" mt4-wifi
 systemctl restart "$SERVICE"
+# Safe while online: setup mode only starts after MT4MON_SETUP_AFTER seconds with no network.
+systemctl restart mt4-wifi
+if [ "$WIFI_ON" = "0" ]; then ok "Wi-Fi setup mode: off"; else ok "Wi-Fi setup mode: on (hotspot password $SETUP_PASS)"; fi
 
 HEALTH=""
 for _ in $(seq 1 20); do
@@ -219,6 +235,8 @@ cat <<EOF
    LCD address        : $LCD_ADDR
    API port           : $PORT   (MT4 WebRequest only allows 80 / 443)
    API key            : $KEY_COPY   (or: sudo mt4mon key)
+   Wi-Fi setup        : no network for 90 s -> hotspot MT4-Setup-XXXX, password $SETUP_PASS
+                        (shown on the LCD; change Wi-Fi any time: sudo mt4mon wifi)
    Everyday commands  : mt4mon status | mt4mon logs | mt4mon help
 EOF
 if [ -n "$TS_IP" ]; then
