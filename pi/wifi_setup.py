@@ -79,18 +79,21 @@ def nm_split(line):
 class State:
     def __init__(self):
         self.lock = threading.Lock()
-        self.mode = "normal"          # normal | setup | connecting
+        self.mode = "normal"          # normal | setup | connecting | connected
         self.ssid_ap = ap_ssid()
         self.target = ""
         self.error = ""
         self.networks = []            # [(ssid, signal, secured)]
         self.last_page_hit = 0.0
         self.pending = None           # (ssid, password) submitted from the page
+        self.announce = False         # show the new IP once, after setup mode
+        self.ip = ""
+        self.until = 0.0              # end of the "connected" IP screen (epoch seconds)
 
     def publish(self):
         data = {"mode": self.mode, "ap_ssid": self.ssid_ap, "ap_pass": SETUP_PASS,
                 "url": f"http://{AP_IP}", "target": self.target, "error": self.error,
-                "time": int(time.time())}
+                "ip": self.ip, "until": self.until, "time": int(time.time())}
         if DRYRUN:
             return
         os.makedirs(STATE_DIR, exist_ok=True)
@@ -122,6 +125,37 @@ def online():
         if st == "connected" and con != AP_CON and typ in ("wifi", "ethernet"):
             return True
     return False
+
+
+def wifi_info():
+    """(ssid, ipv4) of the current Wi-Fi connection, '' when unknown."""
+    if DRYRUN:
+        return "Test WiFi", "192.168.1.45"
+    ok, out = run(["nmcli", "-g", "GENERAL.CONNECTION,IP4.ADDRESS", "device", "show", IFACE],
+                  timeout=15)
+    lines = out.splitlines() if ok else []
+    ssid = lines[0].strip() if lines else ""
+    ip = lines[1].split("/")[0].split("|")[0].strip() if len(lines) > 1 else ""
+    return ssid, ip
+
+
+IP_SCREEN_SECONDS = 10
+
+
+def announce_connected(st, ssid=""):
+    """After setup mode: show the Wi-Fi IP on the LCD once, for 10 seconds."""
+    name, ip = wifi_info()
+    for _ in range(5):                # DHCP may need a moment after 'connected'
+        if ip:
+            break
+        time.sleep(1)
+        name, ip = wifi_info()
+    with st.lock:
+        st.mode, st.target, st.ip = "connected", ssid or name, ip
+        st.until = time.time() + IP_SCREEN_SECONDS
+        st.announce = False
+        st.publish()
+    log(f"connected to {st.target!r}, IP {ip or 'unknown'} - shown on the LCD")
 
 
 def scan():
@@ -165,6 +199,7 @@ def start_ap(st):
     redirect(True)
     with st.lock:
         st.mode, st.networks, st.last_page_hit = "setup", nets, time.time()
+        st.announce = True            # the next successful connection shows its IP
         st.publish()
     log(f"setup mode: hotspot {st.ssid_ap} on {AP_IP}")
     return True
@@ -210,10 +245,18 @@ def controller(st):
             if force:
                 os.remove(FORCE_FILE)
 
-            if st.mode == "normal":
+            if st.mode == "connected":
+                if time.time() >= st.until:   # IP screen done -> normal MT4 screen
+                    with st.lock:
+                        st.mode, st.ip = "normal", ""
+                        st.publish()
+
+            elif st.mode == "normal":
                 if online() and not force:
                     offline_since = None
-                    if st.error:
+                    if st.announce:           # rejoined a saved Wi-Fi after setup mode
+                        announce_connected(st)
+                    elif st.error:
                         with st.lock:
                             st.error = ""
                             st.publish()
@@ -236,10 +279,7 @@ def controller(st):
                     stop_ap()
                     ok, out = save_and_connect(ssid, password)
                     if ok and wait_online(20):
-                        log(f"connected to {ssid!r}")
-                        with st.lock:
-                            st.mode, st.target = "normal", ""
-                            st.publish()
+                        announce_connected(st, ssid)
                         offline_since = None
                     else:
                         log(f"could not connect to {ssid!r}: {out}")

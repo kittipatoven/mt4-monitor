@@ -133,7 +133,7 @@ MT4 data : OK - last update 2.1s ago (154 since start)
 1. จอขึ้น `WIFI SETUP MODE` แล้วแสดงชื่อ Wi-Fi ของ Pi (`MT4-Setup-XXXX`) และรหัส (`PASS ...`)
 2. มือถือเชื่อม Wi-Fi นั้นด้วยรหัสบนจอ → หน้าตั้งค่าเด้งขึ้นเอง (หรือเปิด `10.42.0.1`)
 3. เลือก Wi-Fi (หรือพิมพ์ชื่อเอง) ใส่รหัส → **เชื่อมต่อ**
-4. จอขึ้น `WIFI CONNECTING` แล้วกลับมาแสดงข้อมูล MT4 ภายในไม่กี่วินาที
+4. จอขึ้น `WIFI CONNECTING` แล้ว `✓ WIFI CONNECTED / IP x.x.x.x` 10 วินาที (ครั้งเดียว) แล้วกลับมาแสดงข้อมูล MT4
    ถ้าขึ้น `WIFI FAILED` แปลว่ารหัสผิดหรือ Wi-Fi นั้นยังไม่เปิด — Wi-Fi ที่เลือกถูกบันทึกไว้และ Pi จะลองเองทุก ~3 นาที
 
 เปิดโหมดตั้งค่าเองเมื่อไหร่ก็ได้ (Pi จะหลุดจาก Wi-Fi ปัจจุบัน): `sudo mt4mon wifi`
@@ -186,6 +186,7 @@ mt4mon uninstall --purge   # ลบหมดรวม API key
 | แท็บ Experts: `err=4060` | ยังไม่ได้เพิ่ม URL ใน Allow WebRequest |
 | แท็บ Experts: `HTTP 401` | key ไม่ตรง — เทียบ `mt4mon key` กับ `MonitorEA_key.txt` |
 | จอขึ้น `!! MT4 NO DATA` | MT4/VPS ปิด, Tailscale หลุด (`mt4mon ip`), หรือ EA ถูกถอด |
+| SSH เข้า Pi ไม่ได้ แต่จอยังทำงาน | รอไม่เกิน 5 นาที — ตัวเฝ้า SSH (`mt4-sshwatch`) จะรีสตาร์ท SSH ให้เอง ดูประวัติ: `journalctl -t mt4-sshwatch` (log เก็บข้ามการรีบูตแล้ว สูงสุด 50 MB) |
 | `mt4mon status` บอก API not answering | `mt4mon logs` ดูข้อผิดพลาด แล้ว `mt4mon restart` |
 
 ## ความปลอดภัย

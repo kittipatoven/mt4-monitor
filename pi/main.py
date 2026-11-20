@@ -364,6 +364,10 @@ def wifi_pages(ws):
         return pages
     if mode == "connecting":
         return [("WIFI CONNECTING", str(ws.get("target", ""))[:16], P)]
+    if mode == "connected" and time.time() < float(ws.get("until") or 0):
+        # Shown once for 10 s right after joining a Wi-Fi through setup mode.
+        ip = str(ws.get("ip") or "no IP yet")
+        return [(CHECK + " WIFI CONNECTED", ("IP " + ip) if len(ip) <= 13 else ip[:16], 10)]
     return None
 
 

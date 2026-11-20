@@ -8,7 +8,9 @@ set -euo pipefail
 PURGE=0; [ "${1:-}" = "--purge" ] && PURGE=1
 OWNER_HOME="$(getent passwd "${SUDO_USER:-pi}" | cut -d: -f6)"
 
-systemctl disable --now mt4-monitor mt4-wifi 2>/dev/null || true
+systemctl disable --now mt4-monitor mt4-wifi mt4-sshwatch.timer 2>/dev/null || true
+rm -f /etc/systemd/system/mt4-sshwatch.service /etc/systemd/system/mt4-sshwatch.timer \
+      /etc/systemd/journald.conf.d/50-mt4-persistent.conf
 nmcli connection delete mt4-setup >/dev/null 2>&1 || true
 while iptables -t nat -D PREROUTING -i wlan0 -p tcp --dport 80 -j REDIRECT --to-ports 8080 2>/dev/null; do :; done
 rm -f /etc/systemd/system/mt4-monitor.service /etc/systemd/system/mt4-wifi.service \

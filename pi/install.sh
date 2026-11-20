@@ -59,7 +59,7 @@ if [ -n "$TS_KEY" ] && ! [[ "$TS_KEY" =~ ^tskey- ]]; then
   die "--ts-key must start with tskey-"
 fi
 
-NEEDED="main.py lcd.py config.py test_sender.py requirements.txt mt4-monitor.service mt4-monitor.env.example mt4mon uninstall.sh wifi_setup.py mt4-wifi.service mt4-captive.conf"
+NEEDED="main.py lcd.py config.py test_sender.py requirements.txt mt4-monitor.service mt4-monitor.env.example mt4mon uninstall.sh wifi_setup.py mt4-wifi.service mt4-captive.conf sshwatch.sh mt4-sshwatch.service mt4-sshwatch.timer"
 have_all() { for f in $NEEDED; do [ -f "$1/$f" ] || return 1; done; }
 if [ -z "$SRC" ] || ! have_all "$SRC"; then
   # Run through a pipe (curl | bash) or from an incomplete folder: fetch the project.
@@ -120,7 +120,7 @@ step "3/7 App files ($APP)"
 id "$SVC_USER" >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin "$SVC_USER"
 usermod -aG i2c "$SVC_USER"
 mkdir -p "$APP"
-for f in config.py lcd.py main.py test_sender.py requirements.txt uninstall.sh wifi_setup.py; do
+for f in config.py lcd.py main.py test_sender.py requirements.txt uninstall.sh wifi_setup.py sshwatch.sh; do
   tr -d '\r' < "$SRC/$f" > "$APP/$f"
   chmod 644 "$APP/$f"
 done
@@ -180,8 +180,24 @@ mkdir -p /etc/NetworkManager/dnsmasq-shared.d
 tr -d '\r' < "$SRC/mt4-captive.conf" > /etc/NetworkManager/dnsmasq-shared.d/mt4-captive.conf
 tr -d '\r' < "$SRC/mt4mon" > /usr/local/bin/mt4mon
 chmod 755 /usr/local/bin/mt4mon
+tr -d '\r' < "$SRC/mt4-sshwatch.service" > /etc/systemd/system/mt4-sshwatch.service
+tr -d '\r' < "$SRC/mt4-sshwatch.timer" > /etc/systemd/system/mt4-sshwatch.timer
+# Keep system logs across reboots (otherwise a problem's clues vanish when the Pi restarts).
+# Raspberry Pi OS forces RAM-only logs (40-rpi-volatile-storage.conf); this drop-in overrides
+# it, capped at 50 MB.
+JCONF=/etc/systemd/journald.conf.d/50-mt4-persistent.conf
+if [ ! -f "$JCONF" ]; then
+  mkdir -p /etc/systemd/journald.conf.d /var/log/journal
+  printf '[Journal]\nStorage=persistent\nSystemMaxUse=50M\n' > "$JCONF"
+  systemd-tmpfiles --create --prefix /var/log/journal >/dev/null 2>&1 || true
+  systemctl restart systemd-journald
+  journalctl --flush >/dev/null 2>&1 || true
+  ok "system logs now kept across reboots (max 50 MB)"
+fi
 systemctl daemon-reload
 systemctl enable -q "$SERVICE" mt4-wifi
+systemctl enable -q --now mt4-sshwatch.timer
+ok "SSH watchdog: checks every 5 min, restarts SSH if it stops answering"
 systemctl restart "$SERVICE"
 # Safe while online: setup mode only starts after MT4MON_SETUP_AFTER seconds with no network.
 systemctl restart mt4-wifi
