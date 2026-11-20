@@ -82,7 +82,8 @@ PY
     echo "This disconnects the Pi from its current Wi-Fi (SSH and Tailscale drop too)."
     echo "Then join the hotspot shown on the LCD with your phone and pick the new Wi-Fi."
     read -r -p "Continue? [y/N] " ans
-    [ "$ans" = "y" ] || [ "$ans" = "Y" ] || { echo "cancelled"; exit 0; }
+    ans="$(printf '%s' "$ans" | tr -d '\r[:space:]' | tr '[:upper:]' '[:lower:]')"   # Windows SSH sends \r
+    case "$ans" in y|yes) ;; *) echo "cancelled"; exit 0 ;; esac
     sudo touch /run/mt4-wifi/force && echo "setup mode starting - watch the LCD"
     ;;
   ip)
