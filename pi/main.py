@@ -266,12 +266,12 @@ def build_pages(data, received_at, now, tick=0, hist=()):
         detail = (row(arrow(pl) + signed(pl, room - 2) + trend, right),
                   "EQ " + money(eq, 11).rjust(11) + " " + ok, P)
         big = (*big_pl(pl, beat), config.BIG_SECONDS)
-        bars, change = sparkline(hist, now)
-        if change is None:
-            spark = ("EQ 1H", bars, config.SPARK_SECONDS)
-        else:
-            spark = (row("EQ 1H ", arrow(change) + signed(change, 9)), bars, config.SPARK_SECONDS)
-        return alerts + [big, detail, spark], bool(alerts)
+        pages = [big, detail]
+        if config.SPARK_SECONDS > 0:          # optional 1-hour equity sparkline page
+            bars, change = sparkline(hist, now)
+            label = "EQ 1H" if change is None else row("EQ 1H ", arrow(change) + signed(change, 9))
+            pages.append((label, bars, config.SPARK_SECONDS))
+        return alerts + pages, bool(alerts)
 
     # Home: P/L with direction arrow, blinking heart = data is live, equity.
     left = f"{arrow(pl)} {signed(pl, 9)}"
