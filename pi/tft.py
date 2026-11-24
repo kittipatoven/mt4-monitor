@@ -180,7 +180,11 @@ def render_dashboard(data, age, tick, trend=0, chart=None, index=0, count=2):
     lots = sum(o["lots"] for o in market)
 
     # Big floating P/L
-    d.text((16, 44), "FLOATING P/L", font=font("bold", 13), fill=MUTED)
+    cur = str(acc.get("currency") or "").upper()[:4]
+    d.text((16, 44), "FLOATING P/L" + (f"  ·  {cur}" if cur else ""), font=font("bold", 13), fill=MUTED)
+    if cur == "USC":                                  # cent account: show the dollar value too
+        usd = f"= ${eq / 100:,.2f} equity"
+        d.text((W - 16 - text_w(d, usd, font("bold", 13)), 44), usd, font=font("bold", 13), fill=MUTED)
     big = signed(pl)
     bf = fit_font(d, big, "bold", 64, 330)
     d.text((16, 58), big, font=bf, fill=pl_colour(pl))
