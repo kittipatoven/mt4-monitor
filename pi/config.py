@@ -34,6 +34,13 @@ HOST = os.environ.get("MT4MON_HOST", "0.0.0.0")
 PORT = _env_int("MT4MON_PORT", 80)  # MT4 WebRequest allows only 80/443
 MAX_PAYLOAD_BYTES = 64 * 1024
 
+# --- Display type ----------------------------------------------------------
+# lcd1602 = 16x2 I2C LCD (default) | tft35 = 3.5" 480x320 colour SPI screen
+DISPLAY = os.environ.get("MT4MON_DISPLAY", "lcd1602").strip().lower()
+TFT_FB = os.environ.get("MT4MON_TFT_FB", "").strip()        # empty = find it automatically
+TFT_ROTATE = _env_int("MT4MON_TFT_ROTATE", 0)               # 0 / 90 / 180 / 270
+TFT_PREVIEW = os.environ.get("MT4MON_TFT_PREVIEW", "").strip()  # PC testing: write frames to this PNG
+
 # --- LCD ---------------------------------------------------------------
 LCD_ENABLED = _env_bool("MT4MON_LCD_ENABLED", True)  # False = print to console
 I2C_BUS = _env_int("MT4MON_I2C_BUS", 1)

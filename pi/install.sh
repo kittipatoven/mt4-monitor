@@ -32,6 +32,7 @@ OWNER="${SUDO_USER:-pi}"
 OWNER_HOME="$(getent passwd "$OWNER" | cut -d: -f6)"
 WANT_TS=1
 WANT_WIFI=1
+DISPLAY_SET=""          # --display lcd1602|tft35 (empty = keep current setting)
 TS_KEY="${TS_AUTHKEY:-}"
 LCD_ADDR=""
 REBOOT_NEEDED=0
@@ -46,20 +47,22 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --no-tailscale) WANT_TS=0 ;;
     --no-wifi-setup) WANT_WIFI=0 ;;
+    --display)      DISPLAY_SET="${2:-}"; shift ;;
     --ts-key)       TS_KEY="${2:-}"; shift ;;
     --lcd-address)  LCD_ADDR="${2:-}"; shift ;;
-    -h|--help)      echo "Usage: sudo bash install.sh [--ts-key KEY] [--no-tailscale] [--lcd-address 0x27]"; exit 0 ;;
+    -h|--help)      echo "Usage: sudo bash install.sh [--ts-key KEY] [--no-tailscale] [--lcd-address 0x27] [--display lcd1602|tft35]"; exit 0 ;;
     *)              die "unknown option: $1 (see --help)" ;;
   esac
   shift
 done
 
 [ "$(id -u)" -eq 0 ] || die "run with sudo:   ... | sudo bash   or   sudo bash install.sh"
+case "$DISPLAY_SET" in ""|lcd1602|tft35) ;; *) die "--display must be lcd1602 or tft35" ;; esac
 if [ -n "$TS_KEY" ] && ! [[ "$TS_KEY" =~ ^tskey- ]]; then
   die "--ts-key must start with tskey-"
 fi
 
-NEEDED="main.py lcd.py config.py test_sender.py requirements.txt mt4-monitor.service mt4-monitor.env.example mt4mon uninstall.sh wifi_setup.py mt4-wifi.service mt4-captive.conf sshwatch.sh mt4-sshwatch.service mt4-sshwatch.timer"
+NEEDED="main.py tft.py lcd.py config.py test_sender.py requirements.txt mt4-monitor.service mt4-monitor.env.example mt4mon uninstall.sh wifi_setup.py mt4-wifi.service mt4-captive.conf sshwatch.sh mt4-sshwatch.service mt4-sshwatch.timer"
 have_all() { for f in $NEEDED; do [ -f "$1/$f" ] || return 1; done; }
 if [ -z "$SRC" ] || ! have_all "$SRC"; then
   # Run through a pipe (curl | bash) or from an incomplete folder: fetch the project.
@@ -82,8 +85,8 @@ apt-get update -qq
 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq i2c-tools python3-venv curl iptables dnsmasq-base >/dev/null
 ok "i2c-tools, python3-venv, curl, iptables, dnsmasq-base"
 # Python libraries from apt: much faster than pip on a Pi 3 (pip fills any gap later).
-if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-flask python3-waitress python3-smbus2 >/dev/null 2>&1; then
-  ok "python3-flask, python3-waitress, python3-smbus2"
+if DEBIAN_FRONTEND=noninteractive apt-get install -y -qq python3-flask python3-waitress python3-smbus2      python3-pil python3-qrcode fonts-dejavu-core >/dev/null 2>&1; then
+  ok "python3-flask, python3-waitress, python3-smbus2, python3-pil, python3-qrcode"
 else
   warn "some Python packages are not in apt here - pip will install them (slower)"
 fi
@@ -120,12 +123,14 @@ step "3/7 App files ($APP)"
 id "$SVC_USER" >/dev/null 2>&1 || useradd -r -s /usr/sbin/nologin "$SVC_USER"
 usermod -aG i2c "$SVC_USER"
 mkdir -p "$APP"
-for f in config.py lcd.py main.py test_sender.py requirements.txt uninstall.sh wifi_setup.py sshwatch.sh; do
+for f in config.py lcd.py main.py tft.py test_sender.py requirements.txt uninstall.sh wifi_setup.py sshwatch.sh; do
   tr -d '\r' < "$SRC/$f" > "$APP/$f"
   chmod 644 "$APP/$f"
 done
 # --system-site-packages: reuse the apt Python libraries, so pip has nothing to download.
 [ -x "$APP/venv/bin/python" ] || python3 -m venv --system-site-packages "$APP/venv"
+# Older installs made the venv without apt packages; let it see them (Pillow, qrcode...).
+sed -i 's/^include-system-site-packages = false/include-system-site-packages = true/' "$APP/venv/pyvenv.cfg"
 "$APP/venv/bin/pip" install -q --disable-pip-version-check -r "$APP/requirements.txt"
 "$APP/venv/bin/python" -c "import flask, waitress, smbus2"
 ok "Python packages: flask, waitress, smbus2"
@@ -152,13 +157,46 @@ fi
 chown root:root "$ENV_FILE"
 chmod 600 "$ENV_FILE"
 
+# Hotspot password for Wi-Fi setup mode: "random" = a new one each time setup mode opens
+# (shown on the LCD). Older versions stored one fixed auto-generated number: switch that
+# to random. A password you typed yourself (not 8 digits) is kept.
 SETUP_PASS="$(grep '^MT4MON_SETUP_PASS=' "$ENV_FILE" | cut -d= -f2-)"
-if [ "${#SETUP_PASS}" -lt 8 ]; then        # hotspot password for Wi-Fi setup mode
-  SETUP_PASS="$(python3 -c 'import secrets; print("".join(secrets.choice("23456789") for _ in range(8)))')"
-  sed -i "s/^MT4MON_SETUP_PASS=.*/MT4MON_SETUP_PASS=$SETUP_PASS/" "$ENV_FILE"
+if [ -z "$SETUP_PASS" ] || [[ "$SETUP_PASS" =~ ^[2-9]{8}$ ]]; then
+  sed -i "s/^MT4MON_SETUP_PASS=.*/MT4MON_SETUP_PASS=random/" "$ENV_FILE"
+  SETUP_PASS=random
 fi
+[ "$SETUP_PASS" = "random" ] && PASS_TXT="new random one each time, shown on the LCD" || PASS_TXT="$SETUP_PASS"
 [ "$WANT_WIFI" -eq 0 ] && sed -i 's/^MT4MON_WIFI_SETUP=.*/MT4MON_WIFI_SETUP=0/' "$ENV_FILE"
 WIFI_ON="$(grep '^MT4MON_WIFI_SETUP=' "$ENV_FILE" | cut -d= -f2-)"
+if [ -n "$DISPLAY_SET" ]; then
+  if grep -q '^MT4MON_DISPLAY=' "$ENV_FILE"; then
+    sed -i "s/^MT4MON_DISPLAY=.*/MT4MON_DISPLAY=$DISPLAY_SET/" "$ENV_FILE"
+  else
+    echo "MT4MON_DISPLAY=$DISPLAY_SET" >> "$ENV_FILE"
+  fi
+fi
+DISPLAY_NOW="$(grep '^MT4MON_DISPLAY=' "$ENV_FILE" | cut -d= -f2-)"; DISPLAY_NOW="${DISPLAY_NOW:-lcd1602}"
+CFG=/boot/firmware/config.txt; [ -f "$CFG" ] || CFG=/boot/config.txt
+TFT_LINE="dtoverlay=piscreen,speed=16000000,rotate=90   # mt4-monitor 3.5in TFT"
+if [ "$DISPLAY_NOW" = "tft35" ]; then
+  # 3.5" SPI screen (ILI9486 + XPT2046 touch): SPI on + driver overlay, needs a reboot once.
+  raspi-config nonint do_spi 0 >/dev/null 2>&1 || true
+  if ! grep -q "mt4-monitor 3.5in TFT" "$CFG"; then
+    printf '
+[all]
+%s
+' "$TFT_LINE" >> "$CFG"
+    REBOOT_NEEDED=1
+    ok "3.5in screen driver added to $CFG (reboot needed)"
+  fi
+  ok "display: 3.5in colour TFT"
+else
+  if grep -q "mt4-monitor 3.5in TFT" "$CFG"; then
+    sed -i '/mt4-monitor 3.5in TFT/d' "$CFG"; REBOOT_NEEDED=1
+    ok "3.5in screen driver removed (reboot needed)"
+  fi
+  ok "display: 16x2 LCD"
+fi
 
 KEY="$(grep '^MT4MON_API_KEY=' "$ENV_FILE" | cut -d= -f2-)"
 [ -n "$KEY" ] && [ "$KEY" != "CHANGE_ME" ] || die "MT4MON_API_KEY in $ENV_FILE is empty"
@@ -201,7 +239,7 @@ ok "SSH watchdog: checks every 5 min, restarts SSH if it stops answering"
 systemctl restart "$SERVICE"
 # Safe while online: setup mode only starts after MT4MON_SETUP_AFTER seconds with no network.
 systemctl restart mt4-wifi
-if [ "$WIFI_ON" = "0" ]; then ok "Wi-Fi setup mode: off"; else ok "Wi-Fi setup mode: on (hotspot password $SETUP_PASS)"; fi
+if [ "$WIFI_ON" = "0" ]; then ok "Wi-Fi setup mode: off"; else ok "Wi-Fi setup mode: on (hotspot password: $PASS_TXT)"; fi
 
 HEALTH=""
 for _ in $(seq 1 20); do
@@ -251,7 +289,7 @@ cat <<EOF
    LCD address        : $LCD_ADDR
    API port           : $PORT   (MT4 WebRequest only allows 80 / 443)
    API key            : $KEY_COPY   (or: sudo mt4mon key)
-   Wi-Fi setup        : no network for 90 s -> hotspot MT4-Setup-XXXX, password $SETUP_PASS
+   Wi-Fi setup        : no network for 90 s -> hotspot MT4-Setup-XXXX, password: $PASS_TXT
                         (shown on the LCD; change Wi-Fi any time: sudo mt4mon wifi)
    Everyday commands  : mt4mon status | mt4mon logs | mt4mon help
 EOF

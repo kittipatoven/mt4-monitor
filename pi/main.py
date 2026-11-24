@@ -28,19 +28,41 @@ ORDER_TYPES = {0: "BUY", 1: "SELL", 2: "BLMT", 3: "SLMT", 4: "BSTP", 5: "SSTP"}
 # Shared state
 # ---------------------------------------------------------------------------
 _state_lock = threading.Lock()
-_state = {"data": None, "received_at": None, "updates": 0}
+_state = {"data": None, "received_at": None, "updates": 0,
+          "login": None, "login_changed_at": None}
 # (time, equity, P/L) samples for the sparkline and trend arrow; ~2 h at one per 5 s.
 _history = collections.deque(maxlen=1500)
+ACCOUNT_NOTICE_SECONDS = 10
 
 
 def set_snapshot(data, now=None):
     now = time.monotonic() if now is None else now
     with _state_lock:
+        acc = data["account"]
+        login = acc.get("login")
+        if login is not None and _state["login"] is not None and login != _state["login"]:
+            # MT4 switched to another account: drop the old account's history so the
+            # trend arrow / sparkline never mix two accounts, and announce the switch.
+            _history.clear()
+            _state["login_changed_at"] = now
+            log.info("MT4 account changed: %s -> %s", _state["login"], login)
+        if login is not None:
+            _state["login"] = login
         _state["data"] = data
         _state["received_at"] = now
         _state["updates"] += 1
-        acc = data["account"]
         _history.append((now, acc["equity"], acc["profit"]))
+
+
+def account_notice(now):
+    """'New account' screen for 10 s after MT4 switches account (None otherwise)."""
+    with _state_lock:
+        at, login, data = _state["login_changed_at"], _state["login"], _state["data"]
+    if at is None or now - at >= ACCOUNT_NOTICE_SECONDS:
+        return None
+    server = str((data or {}).get("account", {}).get("server") or "")
+    return (CHECK + " NEW ACCOUNT", (f"#{login}" if login is not None else server)[:16],
+            ACCOUNT_NOTICE_SECONDS)
 
 
 def get_snapshot():
@@ -356,7 +378,9 @@ def wifi_pages(ws):
     if mode == "setup":
         pages = [
             ("WIFI SETUP MODE", "Join on phone:", P),
-            (str(ws.get("ap_ssid", ""))[:16], "PASS " + str(ws.get("ap_pass", ""))[:11], P),
+            (str(ws.get("ap_ssid", ""))[:16], "PASS " + str(ws.get("ap_pass", "")), P)
+            if len(str(ws.get("ap_pass", ""))) <= 11 else
+            ("WIFI PASSWORD:", str(ws.get("ap_pass", ""))[:16], P),
             ("THEN OPEN", str(ws.get("url", "http://10.42.0.1"))[7:23] or "10.42.0.1", P),
         ]
         if ws.get("error"):
@@ -369,6 +393,95 @@ def wifi_pages(ws):
         ip = str(ws.get("ip") or "no IP yet")
         return [(CHECK + " WIFI CONNECTED", ("IP " + ip) if len(ip) <= 13 else ip[:16], 10)]
     return None
+
+
+# ---------------------------------------------------------------------------
+# 3.5" colour TFT (MT4MON_DISPLAY=tft35)
+# ---------------------------------------------------------------------------
+def equity_points(hist, now, n=60, span=3600):
+    """Equity sampled at n even steps over the last `span` seconds (None = no data yet)."""
+    times, eqs = [h[0] for h in hist], [h[1] for h in hist]
+    return [_value_at(times, eqs, now - span + span * (i + 1) / n) for i in range(n)]
+
+
+def trend_sign(hist, now, pl, window=30):
+    t = trend_char(hist, now, pl, window)
+    return 1 if t == TUP else -1 if t == TDN else 0
+
+
+def build_tft_frames(data, received_at, now, tick, hist, ws, notice):
+    """Return [(image, seconds)] for the TFT, mirroring the 1602 logic."""
+    import tft
+    P = config.PAGE_SECONDS
+    if ws.get("mode") in ("setup", "connecting") or (
+            ws.get("mode") == "connected" and time.time() < float(ws.get("until") or 0)):
+        return [(tft.render_wifi(ws, tick), P)]
+    if notice:
+        return [(tft.render_message("NEW ACCOUNT", notice[1], tft.GREEN), P)]
+    if data is None:
+        return [(tft.render_message("MT4 MONITOR", "Waiting for MT4..."), P)]
+    age = max(0, int(now - received_at))
+    acc = data["account"]
+    if age > config.STALE_SECONDS:
+        return [(tft.render_alert("MT4 NO DATA", f"No update for {age} seconds",
+                                  f"Last: Balance {tft.money(acc['balance'])}  Equity {tft.money(acc['equity'])}"), P)]
+    alerts = []
+    term = data.get("terminal", {})
+    if term.get("connected") is False:
+        alerts.append(tft.render_alert("BROKER DISCONNECTED", "MT4 lost its connection to the broker"))
+    if term.get("trade_allowed") is False:
+        alerts.append(tft.render_alert("AUTOTRADING IS OFF", "Turn the AutoTrading button back on in MT4",
+                                       level="warning"))
+    bal, pl = acc["balance"], acc["profit"]
+    dd = -pl / bal * 100 if bal > 0 else 0.0
+    if config.DD_ALERT_PCT > 0 and dd >= config.DD_ALERT_PCT:
+        alerts.append(tft.render_alert(f"DRAWDOWN -{dd:.1f}%", f"Floating P/L {tft.signed(pl)}"))
+    has_orders = bool(data.get("orders"))
+    count = 2 if has_orders else 1
+    pages = [(tft.render_dashboard(data, age, tick, trend_sign(hist, now, pl), equity_points(hist, now),
+                                   0, count), config.BIG_SECONDS)]
+    if has_orders:
+        pages.append((tft.render_orders(data, age, tick, 1, count), config.PAGE_SECONDS))
+    return [(a, P) for a in alerts] + pages
+
+
+def tft_loop(stop_event):
+    """1 frame per second to the TFT framebuffer (or a PNG when previewing)."""
+    import tft
+    out = None
+    index, page_started, tick = 0, 0.0, 0
+    hold_until = 0.0                    # after a tap, stay on the chosen page a while
+    tapped = threading.Event()
+    if not config.TFT_PREVIEW:
+        threading.Thread(target=tft.watch_touch, args=(tapped.set, stop_event),
+                         daemon=True).start()
+    while not stop_event.is_set():
+        try:
+            if out is None:
+                out = (tft.PngOutput(config.TFT_PREVIEW) if config.TFT_PREVIEW
+                       else tft.FramebufferOutput(config.TFT_FB or None, config.TFT_ROTATE))
+                out.show(tft.render_message("MT4 MONITOR", "Starting..."))
+                page_started = time.monotonic()
+            now = time.monotonic()
+            data, received_at, _ = get_snapshot()
+            frames = build_tft_frames(data, received_at, now, tick, get_history(),
+                                      read_wifi_state(), account_notice(now))
+            if tapped.is_set():                       # tap = next page, then hold it 20 s
+                tapped.clear()
+                index, page_started, hold_until = (index + 1) % len(frames), now, now + 20
+            if index >= len(frames):
+                index, page_started = 0, now
+            elif now >= hold_until and now - page_started >= frames[index][1]:
+                index, page_started = (index + 1) % len(frames), now
+            out.show(frames[index][0])
+            tick += 1
+        except OSError as exc:  # framebuffer missing (driver not loaded yet): retry
+            log.warning("TFT error: %s (retrying)", exc)
+            out = None
+            stop_event.wait(5)
+        except Exception:
+            log.exception("TFT render failed")
+        tapped.wait(1)                                # wake early on a tap
 
 
 def boot_animation(lcd, stop_event):
@@ -394,6 +507,9 @@ def lcd_loop(stop_event):
             now = time.monotonic()
             data, received_at, _ = get_snapshot()
             pages = wifi_pages(read_wifi_state())
+            if not pages:
+                notice = account_notice(now)
+                pages = [notice] if notice else None
             setup_screen = bool(pages)
             if setup_screen:
                 alert = False             # setup instructions: steady light, no blinking
@@ -468,7 +584,8 @@ def main():
         raise SystemExit("MT4MON_API_KEY is not set - refusing to start without an API key.")
 
     stop = threading.Event()
-    worker = threading.Thread(target=lcd_loop, args=(stop,), daemon=True)
+    loop = tft_loop if config.DISPLAY == "tft35" else lcd_loop
+    worker = threading.Thread(target=loop, args=(stop,), daemon=True)
     worker.start()
 
     from waitress import serve
