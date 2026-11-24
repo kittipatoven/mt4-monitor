@@ -437,12 +437,57 @@ def build_tft_frames(data, received_at, now, tick, hist, ws, notice):
     if config.DD_ALERT_PCT > 0 and dd >= config.DD_ALERT_PCT:
         alerts.append(tft.render_alert(f"DRAWDOWN -{dd:.1f}%", f"Floating P/L {tft.signed(pl)}"))
     has_orders = bool(data.get("orders"))
+    trend, chart = trend_sign(hist, now, pl), equity_points(hist, now)
+    if config.TFT_LAYOUT == "all":
+        # One page with everything; alerts interleave; dashboard/orders only by tapping (None = tap-only)
+        main_page = (tft.render_all(data, age, tick, trend, chart, sysinfo()), config.BIG_SECONDS)
+        extra = [(tft.render_dashboard(data, age, tick, trend, chart, 0, 1), None)]
+        if has_orders:
+            extra.append((tft.render_orders(data, age, tick, 0, 1), None))
+        return [main_page] + [(a, P) for a in alerts] + extra
     count = 2 if has_orders else 1
-    pages = [(tft.render_dashboard(data, age, tick, trend_sign(hist, now, pl), equity_points(hist, now),
-                                   0, count), config.BIG_SECONDS)]
+    pages = [(tft.render_dashboard(data, age, tick, trend, chart, 0, count), config.BIG_SECONDS)]
     if has_orders:
         pages.append((tft.render_orders(data, age, tick, 1, count), config.PAGE_SECONDS))
     return [(a, P) for a in alerts] + pages
+
+
+_SYSINFO = {"at": -1e9, "info": {}}
+
+
+def sysinfo():
+    """Pi Wi-Fi name/signal, IP and CPU temperature for the TFT footer (cached 15 s)."""
+    now = time.monotonic()
+    if now - _SYSINFO["at"] < 15:
+        return _SYSINFO["info"]
+    import re
+    import socket
+    import subprocess
+    info = {}
+    try:
+        out = subprocess.run(["nmcli", "-t", "-f", "IN-USE,SSID,SIGNAL", "dev", "wifi", "list", "--rescan", "no"],
+                             capture_output=True, text=True, timeout=3).stdout
+        for line in out.splitlines():
+            if line.startswith("*"):
+                parts = re.split(r"(?<!\\):", line)       # nmcli -t escapes ':' as '\:'
+                info["wifi"] = parts[1].replace("\\:", ":")
+                info["signal"] = parts[2]
+                break
+    except Exception:
+        pass
+    try:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("192.0.2.1", 9))          # no packet is sent; just picks the LAN interface
+            info["ip"] = s.getsockname()[0]
+    except Exception:
+        pass
+    try:
+        with open("/sys/class/thermal/thermal_zone0/temp") as f:
+            info["temp"] = int(f.read().strip()) / 1000
+    except Exception:
+        pass
+    _SYSINFO.update(at=now, info=info)
+    return info
 
 
 def tft_loop(stop_event):
@@ -471,8 +516,10 @@ def tft_loop(stop_event):
                 index, page_started, hold_until = (index + 1) % len(frames), now, now + 20
             if index >= len(frames):
                 index, page_started = 0, now
-            elif now >= hold_until and now - page_started >= frames[index][1]:
+            elif now >= hold_until and (frames[index][1] is None or now - page_started >= frames[index][1]):
                 index, page_started = (index + 1) % len(frames), now
+                while frames[index][1] is None:       # tap-only pages are skipped when rotating
+                    index = (index + 1) % len(frames)
             out.show(frames[index][0])
             tick += 1
         except OSError as exc:  # framebuffer missing (driver not loaded yet): retry
