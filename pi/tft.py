@@ -232,6 +232,98 @@ def render_dashboard(data, age, tick, trend=0, chart=None, index=0, count=2):
 ORDER_TYPES = {0: "BUY", 1: "SELL", 2: "BUY LMT", 3: "SELL LMT", 4: "BUY STP", 5: "SELL STP"}
 
 
+def render_all(data, age, tick, trend=0, chart=None, sysinfo=None):
+    """Everything on one 480x320 page: account, margin, orders, chart, CapyTrend, Pi status."""
+    im, d = new_page()
+    status_bar(d, data, age, tick)
+    acc = data["account"]
+    cur = str(acc.get("currency") or "").upper()[:4]
+    pl, bal, eq = acc["profit"], acc["balance"], acc["equity"]
+    margin, free = acc.get("margin", 0.0), acc.get("free_margin", 0.0)
+    orders = data.get("orders", [])
+    market = [o for o in orders if o["type"] in (0, 1)]
+    sysinfo = sysinfo or {}
+
+    # Row 1: big P/L (left) + balance / equity (right)
+    d.text((14, 38), "FLOATING P/L" + (f" · {cur}" if cur else ""), font=font("bold", 11), fill=MUTED)
+    big = signed(pl)
+    bf = fit_font(d, big, "bold", 40, 230, 20)
+    d.text((14, 50), big, font=bf, fill=pl_colour(pl))
+    if trend:
+        triangle(d, 14 + text_w(d, big, bf) + 8, 62, 14, trend > 0, GREEN if trend > 0 else RED)
+    pct = pl / bal * 100 if bal else 0.0
+    sub = f"{pct:+.2f}%" + (f"  ·  = ${eq / 100:,.2f}" if cur == "USC" else "")
+    d.text((14, 96), sub, font=font("regular", 12), fill=MUTED)
+    for i, (label, value) in enumerate((("BALANCE", money(bal)), ("EQUITY", money(eq)))):
+        y = 38 + i * 36
+        d.text((262, y), label, font=font("bold", 11), fill=MUTED)
+        d.text((262, y + 12), value, font=fit_font(d, value, "bold", 20, 204, 12), fill=TEXT)
+
+    # Row 2: margin / leverage chips
+    lev = acc.get("leverage")
+    lev_txt = "1:" + (f"{lev:,}" if isinstance(lev, int) and lev < 100000 else "∞") if lev else "-"
+    cells = [("FREE MARGIN", money(free)), ("MARGIN", money(margin)),
+             ("MARGIN LVL", f"{acc.get('margin_level', 0):,.0f}%" if margin > 0 else "-"), ("LEVERAGE", lev_txt)]
+    cw = (W - 28 - 3 * 6) // 4
+    for i, (label, value) in enumerate(cells):
+        x = 14 + i * (cw + 6)
+        card(d, (x, 116, x + cw, 152), radius=8)
+        d.text((x + 8, 120), label, font=font("bold", 10), fill=MUTED)
+        d.text((x + 8, 133), value, font=fit_font(d, value, "bold", 14, cw - 14, 10), fill=TEXT)
+
+    # Row 3: orders (up to 3) + total
+    card(d, (14, 158, W - 14, 236), radius=8)
+    lots = sum(o["lots"] for o in market)
+    more = f"  ·  +{len(orders) - 3} more" if len(orders) > 3 else ""
+    d.text((24, 162), f"ORDERS {len(market)}  ·  {lots:.2f} lots{more}", font=font("bold", 11), fill=MUTED)
+    total = sum(o["profit"] for o in orders)
+    t = signed(total)
+    d.text((W - 24 - text_w(d, t, font("bold", 12)), 161), t, font=font("bold", 12), fill=pl_colour(total))
+    if not orders:
+        d.text((24, 190), "No open orders", font=font("bold", 16), fill=MUTED)
+    for i, o in enumerate(orders[:3]):
+        y = 180 + i * 18
+        typ = ORDER_TYPES.get(o["type"], "?")
+        buy = o["type"] in (0, 2, 4)
+        d.text((24, y), str(o["symbol"])[:10], font=font("bold", 13), fill=TEXT)
+        d.text((128, y), typ, font=font("bold", 12), fill=GREEN if buy else RED)
+        d.text((206, y), f"{o['lots']:.2f}", font=font("regular", 13), fill=TEXT)
+        sltp = []
+        if o.get("sl"):
+            sltp.append(f"SL {o['sl']:g}")
+        if o.get("tp"):
+            sltp.append(f"TP {o['tp']:g}")
+        if sltp:
+            d.text((252, y + 1), "  ".join(sltp), font=font("regular", 11), fill=MUTED)
+        p = signed(o["profit"])
+        d.text((W - 24 - text_w(d, p, font("bold", 13)), y), p, font=font("bold", 13), fill=pl_colour(o["profit"]))
+
+    # Row 4: equity 1H chart
+    card(d, (14, 242, W - 14, 296), radius=8)
+    d.text((24, 245), "EQUITY 1H", font=font("bold", 10), fill=MUTED)
+    vals = [p for p in (chart or []) if p is not None]
+    if len(vals) >= 2:
+        ch = vals[-1] - vals[0]
+        s = signed(ch)
+        d.text((W - 24 - text_w(d, s, font("bold", 11)), 244), s, font=font("bold", 11), fill=pl_colour(ch))
+    equity_chart(d, (24, 258, W - 24, 290), chart or [])
+
+    # Footer: CapyTrend + Pi status
+    capy = data.get("capybara") or {}
+    parts = []
+    if isinstance(capy.get("magic_filter"), int) and capy["magic_filter"] >= 0:
+        parts.append(f"CAPY {capy.get('magic_orders', 0)} ord {signed(float(capy.get('magic_profit', 0.0)))}")
+    if sysinfo.get("wifi"):
+        parts.append(f"WiFi {sysinfo['wifi'][:14]} {sysinfo.get('signal', '?')}%")
+    if sysinfo.get("ip"):
+        parts.append(sysinfo["ip"])
+    if sysinfo.get("temp") is not None:
+        parts.append(f"{sysinfo['temp']:.0f}°C")
+    foot = "   ·   ".join(parts)
+    d.text((14, 301), foot, font=fit_font(d, foot, "regular", 12, W - 28, 9), fill=MUTED)
+    return im
+
+
 def render_orders(data, age, tick, index=1, count=2):
     im, d = new_page()
     status_bar(d, data, age, tick)

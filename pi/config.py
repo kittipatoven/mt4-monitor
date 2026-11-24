@@ -40,6 +40,8 @@ DISPLAY = os.environ.get("MT4MON_DISPLAY", "lcd1602").strip().lower()
 TFT_FB = os.environ.get("MT4MON_TFT_FB", "").strip()        # empty = find it automatically
 TFT_ROTATE = _env_int("MT4MON_TFT_ROTATE", 0)               # 0 / 90 / 180 / 270
 TFT_PREVIEW = os.environ.get("MT4MON_TFT_PREVIEW", "").strip()  # PC testing: write frames to this PNG
+# all = one page with everything (tap shows the big P/L and order list) | pages = rotate dashboard/orders
+TFT_LAYOUT = os.environ.get("MT4MON_TFT_LAYOUT", "all").strip().lower()
 
 # --- LCD ---------------------------------------------------------------
 LCD_ENABLED = _env_bool("MT4MON_LCD_ENABLED", True)  # False = print to console
