@@ -118,10 +118,6 @@ def status_bar(d, data, age, tick):
     acc = data["account"]
     term = data.get("terminal", {})
     d.rectangle((0, 0, W, 34), fill=CARD)
-    d.text((12, 8), "MT4 MONITOR", font=font("bold", 15), fill=TEXT)
-    login = acc.get("login")
-    if login is not None:
-        d.text((128, 10), f"#{login}", font=font("regular", 13), fill=MUTED)
     x = W - 12
     clock = time.strftime("%H:%M")
     cw = text_w(d, clock, font("bold", 14))
@@ -141,6 +137,19 @@ def status_bar(d, data, age, tick):
     if tick % 2 == 0:
         d.ellipse((x + 8, 13, x + 16, 21), fill=GREEN)
     d.text((x + 20, 9), live, font=font("bold", 13), fill=GREEN)
+    # Title + account number in the space left of the chips; shorten the title if needed.
+    login = acc.get("login")
+    acct_txt = f"#{login}" if login is not None else ""
+    room = x - 12 - 10
+    af = font("regular", 13)
+    for title in ("MT4 MONITOR", "MT4"):
+        tf = font("bold", 15)
+        need = text_w(d, title, tf) + (8 + text_w(d, acct_txt, af) if acct_txt else 0)
+        if need <= room or title == "MT4":
+            break
+    d.text((12, 8), title, font=tf, fill=TEXT)
+    if acct_txt and need <= room:
+        d.text((12 + text_w(d, title, tf) + 8, 10), acct_txt, font=af, fill=MUTED)
 
 
 # --- Equity chart --------------------------------------------------------
