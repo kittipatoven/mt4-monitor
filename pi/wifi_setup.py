@@ -26,7 +26,16 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 ENABLED = os.environ.get("MT4MON_WIFI_SETUP", "1").strip() not in ("0", "false", "no", "off")
 SETUP_AFTER = int(os.environ.get("MT4MON_SETUP_AFTER", "90") or 90)
+# "random" (default) = a new 8-digit hotspot password every time setup mode opens,
+# shown on the LCD. Any other value of 8-63 characters = that fixed password.
 SETUP_PASS = (os.environ.get("MT4MON_SETUP_PASS", "") or "").strip()
+RANDOM_PASS = SETUP_PASS.lower() in ("", "random") or len(SETUP_PASS) < 8
+
+
+def new_ap_password():
+    if not RANDOM_PASS:
+        return SETUP_PASS
+    return "".join(secrets.choice("23456789") for _ in range(8))   # no 0/1: easy to read
 AP_SECONDS = 180           # stay in setup mode this long without page use, then retry saved Wi-Fi
 RETRY_SECONDS = 45         # how long to let saved Wi-Fi try before going back to setup mode
 IFACE = "wlan0"
@@ -89,9 +98,10 @@ class State:
         self.announce = False         # show the new IP once, after setup mode
         self.ip = ""
         self.until = 0.0              # end of the "connected" IP screen (epoch seconds)
+        self.ap_pass = ""             # hotspot password of the current setup session
 
     def publish(self):
-        data = {"mode": self.mode, "ap_ssid": self.ssid_ap, "ap_pass": SETUP_PASS,
+        data = {"mode": self.mode, "ap_ssid": self.ssid_ap, "ap_pass": self.ap_pass,
                 "url": f"http://{AP_IP}", "target": self.target, "error": self.error,
                 "ip": self.ip, "until": self.until, "time": int(time.time())}
         if DRYRUN:
@@ -189,9 +199,10 @@ def redirect(on):
 
 def start_ap(st):
     nets = scan()                     # scan first: the radio is busy once the hotspot runs
+    password = new_ap_password()      # new one every time (unless a fixed one is set)
     run(["nmcli", "connection", "delete", AP_CON], timeout=20)
     ok, out = run(["nmcli", "device", "wifi", "hotspot", "ifname", IFACE, "con-name", AP_CON,
-                   "ssid", st.ssid_ap, "password", SETUP_PASS], timeout=40)
+                   "ssid", st.ssid_ap, "password", password], timeout=40)
     if not ok:
         log(f"hotspot failed: {out}")
         return False
@@ -199,6 +210,7 @@ def start_ap(st):
     redirect(True)
     with st.lock:
         st.mode, st.networks, st.last_page_hit = "setup", nets, time.time()
+        st.ap_pass = password
         st.announce = True            # the next successful connection shows its IP
         st.publish()
     log(f"setup mode: hotspot {st.ssid_ap} on {AP_IP}")
@@ -419,21 +431,18 @@ def render_page(st, problem=None):
 
 
 def main():
-    global SETUP_PASS
     if not ENABLED:
         log("Wi-Fi setup mode is off (MT4MON_WIFI_SETUP=0)")
         while True:
             time.sleep(3600)
-    if len(SETUP_PASS) < 8:
-        SETUP_PASS = "".join(secrets.choice("23456789") for _ in range(8))
-        log("MT4MON_SETUP_PASS missing - using a temporary one for this run")
     st = State()
     st.publish()
     redirect(False)                   # clean up after a crash
     if not DRYRUN:
         run(["nmcli", "connection", "down", AP_CON], timeout=20)
     threading.Thread(target=controller, args=(st,), daemon=True).start()
-    log(f"Wi-Fi setup watcher on {IFACE}; setup hotspot after {SETUP_AFTER}s offline")
+    log(f"Wi-Fi setup watcher on {IFACE}; setup hotspot after {SETUP_AFTER}s offline; "
+        f"password {'random each time' if RANDOM_PASS else 'fixed'}")
     ThreadingHTTPServer(("0.0.0.0", PORTAL_PORT), make_handler(st)).serve_forever()
 
 
